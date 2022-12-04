@@ -7,7 +7,6 @@ random() {
 array=(1 2 3 4 5 6 7 8 9 0 a b c d e f)
 gen64() {
 	ip64() {
-        
 		echo "${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}"
 	}
 	echo "$1:$(ip64):$(ip64):$(ip64):$(ip64)"
@@ -16,14 +15,14 @@ install_3proxy() {
     echo "installing 3proxy"
     mkdir -p /3proxy
     cd /3proxy
-    URL="https://github.com/z3APA3A/3proxy/archive/3proxy-0.8.6.tar.gz"
+    URL="https://github.com/z3APA3A/3proxy/archive/0.9.3.tar.gz"
     wget -qO- $URL | bsdtar -xvf-
-    cd 3proxy-0.8.6
+    cd 3proxy-0.9.3
     make -f Makefile.Linux
     mkdir -p /usr/local/etc/3proxy/{bin,logs,stat}
-    mv /3proxy/3proxy-0.8.6/bin/3proxy /usr/local/etc/3proxy/bin/
-    wget https://raw.githubusercontent.com/xlandgroup/ipv4-ipv6-proxy/master/scripts/3proxy.service-Centos8 --output-document=/3proxy/3proxy-0.8.6/scripts/3proxy.service2
-    cp /3proxy/3proxy-0.8.6/scripts/3proxy.service2 /usr/lib/systemd/system/3proxy.service
+    mv /3proxy/3proxy-0.9.3/bin/3proxy /usr/local/etc/3proxy/bin/
+    wget https://raw.githubusercontent.com/xlandgroup/ipv4-ipv6-proxy/master/scripts/3proxy.service-Centos8 --output-document=/3proxy/3proxy-0.9.3/scripts/3proxy.service2
+    cp /3proxy/3proxy-0.9.3/scripts/3proxy.service2 /usr/lib/systemd/system/3proxy.service
     systemctl link /usr/lib/systemd/system/3proxy.service
     systemctl daemon-reload
 #    systemctl enable 3proxy
@@ -55,9 +54,12 @@ setgid 65535
 setuid 65535
 stacksize 6291456 
 flush
+auth strong
 
-$(awk -F "/" '{print "\n" \
-"" $1 "\n" \
+users $(awk -F "/" 'BEGIN{ORS="";} {print $1 ":CL:" $2 " "}' ${WORKDATA})
+
+$(awk -F "/" '{print "auth strong\n" \
+"allow " $1 "\n" \
 "proxy -6 -n -a -p" $4 " -i" $3 " -e"$5"\n" \
 "flush\n"}' ${WORKDATA})
 EOF
@@ -69,9 +71,20 @@ $(awk -F "/" '{print $3 ":" $4 ":" $1 ":" $2 }' ${WORKDATA})
 EOF
 }
 
+upload_proxy() {
+    cd $WORKDIR
+    local PASS=$(random)
+    zip --password $PASS proxy.zip proxy.txt
+    URL=$(curl -F "file=@proxy.zip" https://file.io)
+
+    echo "Proxy is ready! Format IP:PORT:LOGIN:PASS"
+    echo "Download zip archive from: ${URL}"
+    echo "Password: ${PASS}"
+
+}
 gen_data() {
     seq $FIRST_PORT $LAST_PORT | while read port; do
-        echo "//$IP4/$port/$(gen64 $IP6)"
+        echo "$(random)/$(random)/$IP4/$port/$(gen64 $IP6)"
     done
 }
 
@@ -101,8 +114,11 @@ IP6=$(curl -6 -s icanhazip.com | cut -f1-4 -d':')
 
 echo "Internal ip = ${IP4}. Exteranl sub for ip6 = ${IP6}"
 
+echo "How many proxy do you want to create? Example 500"
+read COUNT
+
 FIRST_PORT=10000
-LAST_PORT=12000
+LAST_PORT=$(($FIRST_PORT + $COUNT))
 
 gen_data >$WORKDIR/data.txt
 gen_iptables >$WORKDIR/boot_iptables.sh
@@ -123,3 +139,5 @@ EOF
 bash /etc/rc.local
 
 gen_proxy_file_for_user
+
+upload_proxy

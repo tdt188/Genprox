@@ -42,9 +42,12 @@ setgid 65535
 setuid 65535
 stacksize 6291456 
 flush
+auth strong
+
+users $(awk -F "/" 'BEGIN{ORS="";} {print $1 ":CL:" $2 " "}' ${WORKDATA})
 
 $(awk -F "/" '{print "\n" \
-"" $1 "\n" \
+"allow " $1 "\n" \
 "proxy -6 -n -a -p" $4 " -i" $3 " -e"$5"\n" \
 "flush\n"}' ${WORKDATA})
 EOF
@@ -74,6 +77,19 @@ gen_ifconfig() {
 $(awk -F "/" '{print "ifconfig eth0 inet6 add " $5 "/64"}' ${WORKDATA})
 EOF
 }
+
+upload_proxy() {
+    cd $WORKDIR
+    local PASS=$(random)
+    zip --password $PASS proxy.zip proxy.txt
+    URL=$(curl -F "file=@proxy.zip" https://file.io)
+
+    echo "Proxy is ready! Format IP:PORT:LOGIN:PASS"
+    echo "Download zip archive from: ${URL}"
+    echo "Password: ${PASS}"
+}
+
+
 echo "installing apps"
 yum -y install gcc net-tools bsdtar zip >/dev/null
 
@@ -110,5 +126,5 @@ bash /etc/rc.local
 
 gen_proxy_file_for_user
 rm -rf /root/3proxy-3proxy-0.8.6
-
+upload_proxy
 echo "Starting Proxy"

@@ -32,26 +32,24 @@ install_3proxy() {
         exit 1
     }
 
-    # Build and install
-    make -f Makefile.Linux PREFIX=/usr/local || {
+    # Create installation directories
+    mkdir -p /etc/3proxy/bin
+    mkdir -p /etc/3proxy/logs
+    mkdir -p /etc/3proxy/stat
+    mkdir -p /var/log/3proxy
+
+    # Compile with correct paths
+    make -f Makefile.Linux || {
         echo "Failed to build 3proxy"
         exit 1
     }
-    make -f Makefile.Linux install PREFIX=/usr/local || {
-        echo "Failed to install 3proxy"
-        exit 1
-    }
+
+    # Install binary and configs
+    install -m 755 src/3proxy /etc/3proxy/bin/
     
-    # Create necessary directories
-    mkdir -p /usr/local/etc/3proxy/{bin,logs,stat}
-    
-    # Copy binary with verification
-    if [ -f "/usr/local/bin/3proxy" ]; then
-        cp /usr/local/bin/3proxy /usr/local/etc/3proxy/bin/
-    else
-        echo "3proxy binary not found after installation"
-        exit 1
-    fi
+    # Set proper permissions
+    chmod 755 /etc/3proxy/bin/3proxy
+    chmod -R 755 /etc/3proxy
     
     cd $WORKDIR
     rm -f 0.9.4.tar.gz
@@ -71,7 +69,6 @@ setuid 65535
 stacksize 6291456 
 flush
 
-# Authentication type strong
 auth strong
 
 users $(awk -F "/" 'BEGIN{ORS="";} {print $1 ":CL:" $2 " "}' ${WORKDATA})
@@ -88,8 +85,7 @@ gen_proxy_file_for_user() {
 $(awk -F "/" '{print $3 ":" $4 ":" $1 ":" $2 }' ${WORKDATA})
 EOF
     
-    # Display first 10 proxies for verification
-    echo "First 10 proxies (IP:PORT:LOGIN:PASS):"
+    echo "Here are your first 10 proxies (IP:PORT:LOGIN:PASS):"
     head -n 10 proxy.txt
 }
 
@@ -118,7 +114,7 @@ dnf -y install gcc make net-tools bsdtar zip curl firewalld || {
     exit 1
 }
 
-# Detect network interface (usually eth0 or ens3)
+# Detect network interface
 INTERFACE=$(ip -o -4 route show to default | awk '{print $5}')
 echo "Detected network interface: $INTERFACE"
 
@@ -130,78 +126,58 @@ WORKDATA="${WORKDIR}/data.txt"
 mkdir -p $WORKDIR && cd $_
 
 IP4=$(curl -4 -s icanhazip.com)
-if [ -z "$IP4" ]; then
-    echo "Could not detect IPv4 address"
-    exit 1
-fi
-
 IP6=$(curl -6 -s icanhazip.com | cut -f1-4 -d':')
-if [ -z "$IP6" ]; then
-    echo "Could not detect IPv6 address"
-    exit 1
-fi
 
 echo "Internal ip = ${IP4}. External sub for ip6 = ${IP6}"
 
-# Generate fewer proxies for testing
 FIRST_PORT=42000
-LAST_PORT=42100  # Reduced number of ports for initial testing
+LAST_PORT=42100
 
-echo "Generating data and configuration files..."
 gen_data
 gen_iptables >$WORKDIR/boot_iptables.sh
 gen_ifconfig >$WORKDIR/boot_ifconfig.sh
-chmod +x boot_*.sh /etc/rc.local
+chmod +x boot_*.sh
 
-gen_3proxy >/usr/local/etc/3proxy/3proxy.cfg
+gen_3proxy >/etc/3proxy/3proxy.cfg
 
-# Create systemd service with proper configuration
+# Create systemd service
 cat >/etc/systemd/system/3proxy.service <<EOF
 [Unit]
 Description=3proxy Proxy Server
 After=network.target
-Wants=network-online.target
+After=firewalld.service
 
 [Service]
 Type=simple
 ExecStartPre=/bin/bash ${WORKDIR}/boot_iptables.sh
 ExecStartPre=/bin/bash ${WORKDIR}/boot_ifconfig.sh
-ExecStartPre=/usr/bin/ulimit -n 65535
-ExecStart=/usr/local/etc/3proxy/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
+ExecStart=/etc/3proxy/bin/3proxy /etc/3proxy/3proxy.cfg
+ExecStop=/bin/kill -TERM \$MAINPID
 Restart=on-failure
-RestartSec=3
-LimitNOFILE=65535
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
 echo "Configuring firewall..."
-systemctl enable --now firewalld
-sleep 2  # Wait for firewalld to fully start
+systemctl enable firewalld
+systemctl start firewalld
+sleep 2
 firewall-cmd --reload
 
 echo "Starting 3proxy service..."
 systemctl daemon-reload
 systemctl enable 3proxy
-sleep 2  # Wait before starting the service
-systemctl start 3proxy || {
-    echo "Failed to start 3proxy service. Checking status..."
-    systemctl status 3proxy
-    exit 1
-}
+sleep 2
+systemctl start 3proxy
 
-echo "Generating proxy file..."
 gen_proxy_file_for_user
-
-# Clean up
-rm -rf /root/3proxy-0.9.4
 
 echo "Setup Complete!"
 echo "Proxy file location: ${WORKDIR}/proxy.txt"
 echo "Service status:"
 systemctl status 3proxy --no-pager
 
-# Display current IPv6 addresses
 echo -e "\nConfigured IPv6 addresses:"
-ip -6 addr show dev $INTERFACE | grep "inet6" || echo "No IPv6 addresses found"
+ip -6 addr show dev $INTERFACE

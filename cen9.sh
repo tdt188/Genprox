@@ -1,58 +1,31 @@
-#!/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+#!/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 random() {
     tr </dev/urandom -dc A-Za-z0-9 | head -c5
     echo
 }
 
+array=(1 2 3 4 5 6 7 8 9 0 a b c d e f)
 gen64() {
-    local ip=""
-    for i in {1..4}; do
-        ip+="$(printf "%02x%02x%02x%02x" $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256))):"
-    done
-    echo "$1:${ip%:}"
+    ip64() {
+        echo "${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}"
+    }
+    echo "$1:$(ip64):$(ip64):$(ip64):$(ip64)"
 }
 
 install_3proxy() {
     echo "installing 3proxy"
-    URL="https://github.com/3proxy/3proxy/archive/refs/tags/0.9.4.tar.gz"
-    wget -q $URL || {
-        echo "Failed to download 3proxy"
-        exit 1
-    }
-    
-    tar -xf 0.9.4.tar.gz || {
-        echo "Failed to extract 3proxy"
-        exit 1
-    }
-    
-    cd 3proxy-0.9.4 || {
-        echo "Failed to enter 3proxy directory"
-        exit 1
-    }
-
-    # Create directories with proper permissions
-    mkdir -p /usr/bin/3proxy
-    mkdir -p /etc/3proxy
-    
-    # Compile
-    make -f Makefile.Linux PREFIX=/usr/bin || {
-        echo "Failed to build 3proxy"
-        exit 1
-    }
-
-    # Install binary
-    cp bin/3proxy /usr/bin/3proxy/ || {
-        echo "Failed to copy 3proxy binary"
-        exit 1
-    }
-
-    chmod 755 /usr/bin/3proxy/3proxy
-    
+    URL="https://github.com/z3APA3A/3proxy/archive/3proxy-0.8.6.tar.gz"
+    dnf install -y wget make gcc net-tools zip jq bsdtar curl firewalld
+    systemctl enable --now firewalld
+    wget $URL 
+    tar -xvf 3proxy-*
+    cd 3proxy-3proxy-0.8.6
+    make -f Makefile.Linux
+    mkdir -p /usr/local/etc/3proxy/{bin,logs,stat}
+    cp src/3proxy /usr/local/etc/3proxy/bin/
     cd $WORKDIR
-    rm -f 0.9.4.tar.gz
-    echo "3proxy installation completed"
 }
 
 gen_3proxy() {
@@ -61,16 +34,13 @@ daemon
 maxconn 2000
 nserver 1.1.1.1
 nserver 8.8.4.4
+nserver 2001:4860:4860::8888
+nserver 2001:4860:4860::8844
 nscache 65536
 timeouts 1 5 30 60 180 1800 15 60
 setgid 65535
 setuid 65535
 stacksize 6291456 
-
-# Log configuration
-log /var/log/3proxy/3proxy.log D
-logformat "- +_L%t.%. %N.%p %E %U %C:%c %R:%r %O %I %h %T"
-
 flush
 auth strong
 
@@ -87,45 +57,58 @@ gen_proxy_file_for_user() {
     cat >proxy.txt <<EOF
 $(awk -F "/" '{print $3 ":" $4 ":" $1 ":" $2 }' ${WORKDATA})
 EOF
-    
-    echo "Here are your first 10 proxies (IP:PORT:LOGIN:PASS):"
-    head -n 10 proxy.txt
 }
 
 gen_data() {
     seq $FIRST_PORT $LAST_PORT | while read port; do
-        echo "$(random)/$(random)/$IP4/$port/$(gen64 $IP6)"
+        local USER=$(random)
+        local PASS=$(random)
+        echo "$USER/$PASS/$IP4/$port/$(gen64 $IP6)"
     done > $WORKDATA
 }
 
-gen_iptables() {
-    cat <<EOF
-    $(awk -F "/" '{print "firewall-cmd --permanent --add-port=" $4 "/tcp"}' ${WORKDATA}) 
-EOF
+gen_firewalld() {
+    # Instead of iptables, use firewall-cmd to open ports
+    # We'll generate a script that adds all these ports to firewalld.
+    echo "#!/bin/sh" > $WORKDIR/boot_firewalld.sh
+    awk -F "/" '{print "firewall-cmd --permanent --add-port="$4"/tcp"}' ${WORKDATA} >> $WORKDIR/boot_firewalld.sh
+    echo "firewall-cmd --reload" >> $WORKDIR/boot_firewalld.sh
+    chmod +x $WORKDIR/boot_firewalld.sh
 }
 
-gen_ifconfig() {
-    cat <<EOF
-$(awk -F "/" '{print "ip addr add " $5 "/64 dev '"$INTERFACE"'"}' ${WORKDATA})
-EOF
+gen_ip6_config() {
+    # Instead of ifconfig, use ip command to add IPv6 addresses
+    # Also ensure to use the correct network interface name (replace eth0 if needed)
+    echo "#!/bin/sh" > $WORKDIR/boot_ifconfig.sh
+    awk -F "/" '{print "ip -6 addr add " $5 "/64 dev eth0"}' ${WORKDATA} >> $WORKDIR/boot_ifconfig.sh
+    chmod +x $WORKDIR/boot_ifconfig.sh
 }
 
-echo "Installing required packages..."
-dnf -y install gcc make net-tools bsdtar zip curl firewalld
+upload_proxy() {
+    cd $WORKDIR
+    local PASS=$(random)
+    zip --password $PASS proxy.zip proxy.txt
+    local RESPONSE=$(curl -F "file=@proxy.zip" https://file.io)
+    echo "Upload response: $RESPONSE"
 
-# Create log directory
-mkdir -p /var/log/3proxy
-chmod 777 /var/log/3proxy
+    local URL=$(echo $RESPONSE | jq -r .link)
+    if [ "$URL" != "null" ]; then
+        echo "Proxy is ready! Format IP:PORT:LOGIN:PASS"
+        echo "Download zip archive from: ${URL}"
+        echo "Password: ${PASS}"
+    else
+        echo "Failed to upload the proxy list."
+    fi
+}
 
-INTERFACE=$(ip -o -4 route show to default | awk '{print $5}')
-echo "Detected network interface: $INTERFACE"
+#################################
+# Main Execution Starts Here
+#################################
 
-install_3proxy
-
-echo "Creating working folder..."
+echo "installing apps"
 WORKDIR="/home/bkns"
 WORKDATA="${WORKDIR}/data.txt"
-mkdir -p $WORKDIR && cd $_
+mkdir -p $WORKDIR && cd $WORKDIR
 
 IP4=$(curl -4 -s icanhazip.com)
 IP6=$(curl -6 -s icanhazip.com | cut -f1-4 -d':')
@@ -133,66 +116,58 @@ IP6=$(curl -6 -s icanhazip.com | cut -f1-4 -d':')
 echo "Internal ip = ${IP4}. External sub for ip6 = ${IP6}"
 
 FIRST_PORT=42000
-LAST_PORT=42100
+LAST_PORT=43999
 
-gen_data
-gen_iptables >$WORKDIR/boot_iptables.sh
-gen_ifconfig >$WORKDIR/boot_ifconfig.sh
-chmod +x boot_*.sh
+install_3proxy
+gen_data > $WORKDATA
+gen_firewalld
+gen_ip6_config
 
-gen_3proxy >/etc/3proxy/3proxy.cfg
+gen_3proxy > /usr/local/etc/3proxy/3proxy.cfg
 
-# Create systemd service with direct binary path
-cat >/etc/systemd/system/3proxy.service <<EOF
+gen_proxy_file_for_user
+rm -rf /root/3proxy-3proxy-0.8.6
+
+# Create a systemd unit to run setup (ports & IPv6) at boot
+cat >/etc/systemd/system/3proxy-setup.service <<EOF
 [Unit]
-Description=3proxy Proxy Server
+Description=3Proxy Setup Service
 After=network.target
-After=firewalld.service
 
 [Service]
-Type=simple
-ExecStartPre=/bin/bash ${WORKDIR}/boot_iptables.sh
-ExecStartPre=/bin/bash ${WORKDIR}/boot_ifconfig.sh
-ExecStart=/usr/bin/3proxy/3proxy /etc/3proxy/3proxy.cfg
-Restart=always
-RestartSec=3
-StandardOutput=append:/var/log/3proxy/service.log
-StandardError=append:/var/log/3proxy/error.log
+Type=oneshot
+ExecStart=/bin/bash $WORKDIR/boot_firewalld.sh
+ExecStart=/bin/bash $WORKDIR/boot_ifconfig.sh
+ExecStart=/usr/bin/ulimit -n 10048
+RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-echo "Configuring firewall..."
-systemctl stop firewalld
-systemctl start firewalld
-firewall-cmd --reload
-
-echo "Configuring IPv6..."
-sysctl -w net.ipv6.conf.all.forwarding=1
-sysctl -w net.ipv6.conf.default.forwarding=1
-
-echo "Starting 3proxy service..."
 systemctl daemon-reload
-systemctl enable 3proxy
-sleep 2
-systemctl restart 3proxy || {
-    echo "Service failed to start. Checking logs..."
-    tail -n 50 /var/log/3proxy/3proxy.log
-    tail -n 50 /var/log/3proxy/error.log
-    exit 1
-}
+systemctl enable 3proxy-setup.service
+systemctl start 3proxy-setup.service
 
-gen_proxy_file_for_user
+# Create a systemd unit to run 3proxy after setup
+cat >/etc/systemd/system/3proxy.service <<EOF
+[Unit]
+Description=3proxy Proxy Server
+After=3proxy-setup.service
+Wants=3proxy-setup.service
 
-echo -e "\nSetup Complete!"
-echo "Proxy file location: ${WORKDIR}/proxy.txt"
-echo "Log files:"
-echo "- Service log: /var/log/3proxy/service.log"
-echo "- Error log: /var/log/3proxy/error.log"
-echo "- Main log: /var/log/3proxy/3proxy.log"
-echo -e "\nService status:"
-systemctl status 3proxy --no-pager
+[Service]
+Type=simple
+ExecStart=/usr/local/etc/3proxy/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
+Restart=on-failure
 
-echo -e "\nConfigured IPv6 addresses:"
-ip -6 addr show dev $INTERFACE
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable 3proxy.service
+systemctl start 3proxy.service
+
+upload_proxy
+echo "Starting Proxy"

@@ -68,8 +68,6 @@ gen_data() {
 }
 
 gen_firewalld() {
-    # Instead of iptables, use firewall-cmd to open ports
-    # We'll generate a script that adds all these ports to firewalld.
     echo "#!/bin/sh" > $WORKDIR/boot_firewalld.sh
     awk -F "/" '{print "firewall-cmd --permanent --add-port="$4"/tcp"}' ${WORKDATA} >> $WORKDIR/boot_firewalld.sh
     echo "firewall-cmd --reload" >> $WORKDIR/boot_firewalld.sh
@@ -77,8 +75,6 @@ gen_firewalld() {
 }
 
 gen_ip6_config() {
-    # Instead of ifconfig, use ip command to add IPv6 addresses
-    # Also ensure to use the correct network interface name (replace eth0 if needed)
     echo "#!/bin/sh" > $WORKDIR/boot_ifconfig.sh
     awk -F "/" '{print "ip -6 addr add " $5 "/64 dev eth0"}' ${WORKDATA} >> $WORKDIR/boot_ifconfig.sh
     chmod +x $WORKDIR/boot_ifconfig.sh
